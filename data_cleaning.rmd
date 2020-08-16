@@ -1,0 +1,170 @@
+---
+title: "Project: Retail Sale Prediction"
+author: "Zach Zhu"
+date: "12/04/2019"
+header-includes:
+- \usepackage{graphicx}
+- \usepackage{fancyhdr}
+- \usepackage{enumitem}
+- \usepackage{amsmath ,amssymb ,amsthm}
+- \pagestyle{fancy}
+- \rhead{\today}
+- \lhead{MSiA401}
+- \cfoot{\thepage}
+- \renewcommand{\headrulewidth}{1pt}
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    toc: false
+    toc_depth: 3
+    number_sections: false
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This file contains the code to clean the raw data in the file `sales_data.csv` and output data for modelling `cleaning_records.csv`
+
+## Loading dataset and import libraries
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(lubridate)
+library(ggplot2) #Plots
+```
+
+```{r, message=FALSE, warning=FALSE}
+records <- read.csv("sales_data.csv", stringsAsFactors = FALSE)
+```
+
+
+## Standardizing data
+
+### Reformat date variables
+
+```{r}
+records <- mutate(records, datead6 = mdy(datead6), datelp6 = mdy(datelp6))
+```
+
+### Checking if datead6 <= datelp6
+
+```{r}
+test <- records[records$datead6 > records$datelp6,][c('datead6','datelp6')] #834 rows
+#For records with "date added" after "date last purchase" - imputing datead6 with datelp6
+records <- transform(records, datead6 = if_else(datead6 > datelp6, datelp6, datead6))
+```
+
+### Add the first 3 digits into `lpuryear`
+
+```{r}
+records[!is.na(records$lpuryear),]$lpuryear <- ifelse(records[!is.na(records$lpuryear),]$lpuryear<3,as.integer(paste0('201',as.character(records[!is.na(records$lpuryear),]$lpuryear))),as.integer(paste0('200',as.character(records[!is.na(records$lpuryear),]$lpuryear))))
+```
+
+### Add customer id
+
+Adding an ID column to identify each customer uniquely
+
+```{r}
+records <- mutate(records, custId = as.integer(row.names(records)))
+```
+
+
+## Handling missing and incorrect data
+
+## Summary Statistics of columns
+```{r}
+summary(records)
+#Fields with missing values
+#1. lpuryear
+colnames(records)
+cor(records[c("targdol","slstyr","slslyr","sls2ago","sls3ago","slshist","ordtyr","ordlyr",
+              "ord2ago","ord3ago","ordhist","falord","sprord")])
+```
+
+### datelp6 and lpuryear
+
+We found some NA values in `lpuryear`. To deal with NA values, we use the year in `datelp6` to fill it. We also compare `lpuryear` with `datelp6` and update one of them by the larger one. 
+
+```{r}
+records[is.na(records$lpuryear),]$lpuryear <- year(records[is.na(records$lpuryear),]$datelp6)
+
+test <- records[records$lpuryear < year(records$datelp6),] #3553 cases
+test_1 <- records[records$lpuryear > year(records$datelp6),] #4219 cases
+
+#Imputing lpuryear with max of the two years 
+records$lpuryear <- with(records, pmax(lpuryear, year(datelp6)))
+#records[records$lpuryear < year(records$datelp6),]$lpuryear <- year(records[records$lpuryear < records$datelp6,]$datelp6)
+```
+
+## Compare sales($) fields and order(#) fields
+```{r}
+test <- records[(records$slstyr > 0 && records$ordtyr == 0),] #0
+test <- records[(records$slslyr > 0 && records$ordlyr == 0),] #0
+test <- records[(records$sls2ago > 0 && records$ord2ago == 0),] #0
+test <- records[(records$sls3ago > 0 && records$ord3ago == 0),] #0
+test <- records[(records$slshist > 0 && records$ordhist == 0),] #0
+
+temp <- filter(records, slstyr == 0 & (ordtyr > 0)) #205
+temp <- filter(records, slslyr == 0 & (ordlyr > 0)) #121
+temp <- filter(records, sls2ago == 0 & (ord2ago > 0)) #124
+temp <- filter(records, sls3ago == 0 & (ord3ago > 0)) #237
+temp <- filter(records, slshist == 0 & (ordhist > 0)) #499
+
+test <- records[(records$slstyr < records$ordtyr),] #206
+#Imputing ordtyr with slstyr, i.e. 0
+records$ordtyr <- if_else((records$slstyr < records$ordtyr),records$slstyr,records$ordtyr)
+
+test <- records[(records$slslyr < records$ordlyr),] #121
+#Imputing ordlyr with slslyr, i.e. 0
+records$ordlyr <- if_else((records$slslyr < records$ordlyr),records$slslyr,records$ordlyr)
+
+test <- records[(records$sls2ago < records$ord2ago),] #124
+#Imputing ord2ago with sls2ago, i.e. 0
+records$ord2ago <- if_else((records$sls2ago < records$ord2ago),records$sls2ago,records$ord2ago)
+
+test <- records[(records$sls3ago < records$ord3ago),] #237
+#Imputing ord3ago with sls3ago, i.e. 0
+records$ord3ago <- if_else((records$sls3ago < records$ord3ago),records$sls3ago,records$ord3ago)
+
+test <- records[(records$slshist < records$ordhist),] #500
+#Imputing ordhist with slshist, i.e. 0
+records$ordhist <- if_else((records$slshist < records$ordhist),records$slshist,records$ordhist)
+
+```
+
+### Handling incorrect `falord`, `sprord` and `ordhist`
+
+If the sum of `falord` and `sprord` is greater than `ordhist`, we need to update `ordhist`; otherwise, we need to update either `falord` or `sprord`.
+
+If the sum of `falord` and `sprord` are greater than `ordhist`, update `ordhist`. Otherwise, update either `falord` or `sprord` with respect to `lpurseason`,
+```{r}
+records %>%
+    mutate(ordhist = ifelse(ordhist<falord+sprord, falord+sprord, ordhist)) %>%
+    mutate(sprord = ifelse(ordhist>falord+sprord & month(records$datelp6) < 7,
+                           ordhist-falord, sprord)) %>%
+    mutate(falord = ifelse(ordhist>falord+sprord & month(records$datelp6) >= 7,
+                           ordhist-sprord, falord))
+```
+
+## Handling incorrect unmatched order number and sales for each year
+
+```{r}
+test <- records[records$datead6 > records$datelp6,][c('datead6','datelp6')] #834 rows
+#For records with "date added" after "date last purchase" - imputing datead6 with datelp6
+records <- transform(records, datead6 = if_else(datead6 > datelp6, datelp6, datead6))
+
+```
+
+## Creating binary target to identify responders for logistic regression model
+```{r}
+records$responder <- ifelse((records$targdol > 0), 1, 0)
+
+```
+
+## Writing out clean data
+
+```{r}
+write.csv(train, file = "cleaning_records.csv", row.names=FALSE)
+```

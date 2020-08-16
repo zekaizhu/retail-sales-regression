@@ -1,0 +1,424 @@
+---
+title: "Project: Retail Sale Prediction"
+author: "Zach Zhu"
+date: "12/04/2019"
+header-includes:
+- \usepackage{graphicx}
+- \usepackage{fancyhdr}
+- \usepackage{enumitem}
+- \usepackage{amsmath ,amssymb ,amsthm}
+- \pagestyle{fancy}
+- \rhead{\today}
+- \lhead{MSiA401}
+- \cfoot{\thepage}
+- \renewcommand{\headrulewidth}{1pt}
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    toc: false
+    toc_depth: 3
+    number_sections: false
+---
+
+\section{1}
+
+## Load data
+```{r}
+## Loading dataset and import libraries
+library(dplyr)
+library(lubridate)
+library(car) #VIF
+library(Information) #IV
+library(ggplot2) #Plots
+library(caret)
+library(DMwR)
+library(MASS)
+library(tidyverse)
+
+# read the file
+records <- read.csv("~/msia401/PROJECT/cleaning_records.csv")
+```
+
+## Creating some additional features}
+```{r}
+records$train <- NULL
+
+#last purchase season
+records$lpurseason <- relevel(as.factor(ifelse(month(records$datelp6) < 7, 'S','F')),ref = 'S')
+
+#years between last purchase and 2012
+records$year_btwn <- 2012 - records$lpuryear
+
+#years on book
+records$yob <- 2012 - year(records$datead6)
+
+#fall shopper vs spring shopper
+records$shopper <- relevel(as.factor(ifelse((records$falord > records$sprord), 'F',
+                                            ifelse(records$falord == records$sprord,
+                                                   'T','S'))),ref = 'S')
+
+#Ratio of sales this year to previous years - engagement
+records$slstyr_lyr <- ifelse(records$slstyr == 0, 0, 
+                             ifelse(records$slslyr == 0, records$slstyr,
+                                    records$slstyr/records$slslyr))
+records$slstyr_2ago <- ifelse(records$slstyr == 0, 0, 
+                             ifelse(records$sls2ago == 0, records$slstyr,
+                                    records$slstyr/records$sls2ago))
+records$slstyr_3ago <- ifelse(records$slstyr == 0, 0, 
+                             ifelse(records$sls3ago == 0, records$slstyr,
+                                    records$slstyr/records$sls3ago))
+
+# ratio of total past purchase to the total time the customer has been on file
+records$ratio_sls_yob <- ifelse(records$yob == 0, 0,records$slshist/records$yob)
+
+records <- records [c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,26,25)]
+
+```
+## outlier
+```{r}
+# plot 
+for ( i in seq(4,length(records),1) ) {
+  plot(records[,i],ylab=names(records[i]),type="p")
+}
+```
+```{r}
+# remove outliers
+new_records<-records[!(records$falord >80),]
+new_records<-new_records[!(new_records$year_btwn >30),]
+```
+
+
+
+```{r}
+# remove outlier - replace the outliers with NA (preserve the row positions)
+Outlier <- function(x){
+  low <- median(x, na.rm=TRUE)-100*(mad(x)) 
+  high <- median(x, na.rm=TRUE)+100*(mad(x)) 
+  outlier <- c()
+  for (i in x){
+    if (i > high | i < low){
+      outlier <- c(outlier, i)
+    }
+  }
+  outlier
+}
+  
+                      
+outlierreplacement <- function(dataframe){
+   dataframe %>%          
+           map_if(is.numeric, ~ replace(.x, .x %in% Outlier(.x), NA)) %>%
+           bind_cols 
+}
+
+new_records <-outlierreplacement(records)
+```
+
+```{r}
+lm1 <- lm(targdol ~ lpuryear + slstyr + slslyr + sls2ago + sls3ago + slshist + ordtyr + ordlyr + ord2ago + ord3ago + ordhist + falord + sprord + lpurseason + year_btwn + yob + shopper + slstyr_lyr + slstyr_2ago + slstyr_3ago,ratio_sls_yob, data=records)
+
+#Cook's distance
+cook_d <- cooks.distance(lm1) 
+
+n <- nrow(records)
+p <- 21
+
+cook_thr <- qf(.1, df1=p+1, df2=n-p-1) 
+cook_d > cook_thr
+```
+
+```{r}
+# plot  after removing outliers
+for ( i in seq(4,length(new_records),1) ) {
+  plot(new_records[,i],ylab=names(new_records[i]),type="p")
+}
+```
+
+## Dividing the data into training and test set
+```{r}
+train <- filter(new_records, train == 1)
+test <- filter(new_records, train == 0)
+
+table(train$responder)   # "0":"1" = 73510:7716  ~= 10:1
+```
+
+```{r}
+# compute class balance - train
+table(records$responder)/nrow(records)
+```
+
+```{r}
+# compute class balance - test
+table(test$responder)/nrow(test)
+```
+
+```{r}
+new_train <-train_new 
+new_train <- new_train[c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,26,25)]
+```
+
+## Fitting logistic regression model on train data
+```{r}
+new_train$targdol <-new_train$datead6<-new_train$datelp6 <-new_train$custId <-NULL
+test <- test_set
+test$targdol <-test$datead6<-test$datelp6 <-test$custId <-NULL
+test <- test[c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,22,21)]
+colnames(new_train)
+
+#Forward Stepwise with StepAIC
+log_fit <- glm(responder ~., family = binomial, data = new_train)%>%
+  stepAIC(trace = FALSE)
+
+summary(log_fit)
+```
+
+
+```{r}
+# drop year_btwn
+new_train$year_btwn <- NULL
+log_fit1 <- glm(responder ~., family = binomial, data = new_train)%>%
+  stepAIC(trace = FALSE)
+
+summary(log_fit1)
+```
+```{r}
+vif(log_fit1)
+```
+
+```{r}
+# drop ordhist since it is highly correlated to ord3ago, ord3ago, ord3lyr and ordtyr
+new_train$ordhist <- NULL
+log_fit2 <- glm(responder ~., family = binomial, data = new_train)%>%
+  stepAIC(trace = FALSE)
+summary(log_fit2)
+```
+```{r}
+vif(log_fit2)
+```
+
+## Checking accuracy on train
+```{r}
+train_prob <- predict(log_fit,newdata=new_train, type="response")
+train_prob
+```
+
+```{r}
+# add probability column to the dataset
+new_train$prob <- train_prob
+confusion <- table(new_train$responder, train_predict>0.60)
+confusion
+```
+
+```{r}
+CCR <- sum(diag(confusion))/sum(confusion)
+
+sensitivity <- confusion[2,2]/sum(confusion[2,1],confusion[2,2])
+specificity <- confusion[1,1]/sum(confusion[1,1],confusion[1,2])
+precision <- confusion[2,2]/sum(confusion[2,1],confusion[2,2])
+F1 <- 2*precision*sensitivity/(precision+sensitivity)
+
+sprintf("CCR = %f, precision = %f, sensitivity = %f,  specificity = %f, F1 = %f",CCR, precision,sensitivity, specificity, F1 )
+```
+
+## Testing on Test Data
+```{r}
+#Checking Accuracy on train
+test_prob <-predict(log_fit,newdata=test, type="response")
+confusion1 <- table(test$responder, test_prob>0.60)
+confusion1
+```
+
+```{r}
+CCR1 <- sum(diag(confusion1))/sum(confusion1)
+
+sensitivity1 <- confusion1[2,2]/sum(confusion1[2,1],confusion1[2,2])
+specificity1 <- confusion1[1,1]/sum(confusion1[1,1],confusion1[1,2])
+precision1 <- confusion1[2,2]/sum(confusion1[2,1],confusion1[2,2])
+F1_test <- 2*precision1*sensitivity1/(precision1+sensitivity1)
+
+sprintf("CCR = %f, precision = %f, sensitivity = %f,  specificity = %f, F1 = %f",CCR1, precision1,sensitivity1, specificity1, F1_test )
+```
+## output dataset
+```{r}
+train_new <- train_new[c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,26,25)]
+test_set <- test_set[c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,26,25)]
+
+train_new$prob <- train_prob
+test_set$prob <- test_prob
+df <- rbind(train_new[-c(1:75342),], test_set)
+
+write.csv(df, file="sale_with_prob.csv")
+```
+
+
+###123
+### Linear Regression Model
+Fitting the final linear regression model
+```{r}
+#Responders only
+lm_train <- filter(records, train == 1 & targdol > 0)
+lm_test <- filter(records, train == 0 & targdol > 0)
+
+e <- 0.0001
+lm7 <- lm(formula = log(targdol + 1) ~ log(slshist + e) + ordhist + 
+    log(slstyr + e) + sprord + falord + year_btwn + log(sls2ago + 
+    e) + log(slslyr + e) + log(ord2ago + e) + log(ordlyr + e) + 
+    log(average_amt + e), data = lm_train)
+summary(lm7)
+vif(lm7)
+
+#Checking Accuracy on train
+RMSE_train <- sqrt(sum((lm_train$targdol - lm7$fitted.values)^2)/(4845-14))
+sprintf("RMSE on training = %f",RMSE_train)
+
+#Checking Accuracy on val
+lm_test$lm_predict <- predict(lm7,newdata=lm_test,type="response")
+
+RMSE_val <- sqrt(sum((lm_test$targdol - lm_test$lm_predict)^2)/(4726))
+sprintf("RMSE on validation = %f",RMSE_val)
+```
+
+### Checking linear model predictions manually - not matching
+```{r}
+
+#Linear Model Predictions on train
+# train$test_pred <- 1.480912 
+# + log(train$slshist + e)*-0.132348
+# + train$ordhist*-0.093283
+# + log(train$slstyr + e)*0.005295
+# + train$sprord*0.129895
+# + train$falord*0.142560
+# + train$year_btwn*0.024766
+# + log(train$sls2ago + e)*0.257906
+# + log(train$slslyr + e)*0.160945
+# + log(train$ord2ago + e)*-0.353588
+# + log(train$ordlyr + e)*-0.218110
+# + log(train$average_amt + e)*0.296130;
+# 
+# train$test_pred_1 <- exp(1.480912 
+# + log(train$slshist + e)*-0.132348
+# + train$ordhist*-0.093283
+# + log(train$slstyr + e)*0.005295
+# + train$sprord*0.129895
+# + train$falord*0.142560
+# + train$year_btwn*0.024766
+# + log(train$sls2ago + e)*0.257906
+# + log(train$slslyr + e)*0.160945
+# + log(train$ord2ago + e)*-0.353588
+# + log(train$ordlyr + e)*-0.218110
+# + log(train$average_amt + e)*0.296130)-1;
+# 
+# train$lm_pred <- predict(lm7,newdata = train,type="response")
+# check <- train[c("targdol","test_pred","test_pred_1","lm_pred")]
+
+```
+
+
+
+### Combined Prediction on Train
+
+```{r}
+#Logistic Prediction on test
+train$log_pred <- predict(log_fit,newdata=train,type="response")
+
+#Linear Model Predictions on train
+train$lm_pred <- predict(lm7,newdata = train,type="response")
+train$tot_pred = train$log_pred*(exp(train$lm_pred)-1)
+RMSE_train <- sqrt(sum((train$tot_pred-train$targdol)^2)/(50418))
+
+sprintf("RMSE on total training data = %f",RMSE_train)
+
+#Binned Accuracy of Linear Model
+train$group <- cut(train$targdol, 20)
+accuracy <- aggregate(train[, c("targdol","lm_pred")], list(train$group), sum)
+
+#Plotting accuracy of linear model
+d <- melt(accuracy, id.vars="Group.1")
+p <- ggplot(d, aes(Group.1,value, col=variable)) +
+  geom_point() +
+  stat_smooth() 
+print(p + ggtitle("Linear Model Accuracy - Train"))
+
+#Binned Accuracy of Logistic Model
+train$group1 <- cut(train$log_pred, 20)
+accuracy1 <- aggregate(train[, c("responder","log_pred")], list(train$group1), sum)
+
+#Plotting accuracy of logistic model
+d <- melt(accuracy1, id.vars="Group.1")
+p <- ggplot(d, aes(Group.1,value, col=variable)) +
+  geom_point() +
+  stat_smooth() 
+print(p + ggtitle("Logistic Model Accuracy - Train"))
+
+#Binned Accuracy of Total Prediction
+train$group2 <- cut(train$targdol, 20)
+accuracy2 <- aggregate(train[, c("targdol","tot_pred")], list(train$group2), sum)
+
+#Plotting accuracy of linear model
+d <- melt(accuracy2, id.vars="Group.1")
+p <- ggplot(d, aes(Group.1,value, col=variable)) +
+  geom_point() +
+  stat_smooth() 
+print(p + ggtitle("Combined Accuracy - Train"))
+```
+
+
+### Combined Prediction on Test
+
+```{r}
+#Logistic Prediction on test
+val$log_pred <- predict(log_fit,newdata=val,type="response")
+
+#Linear Model Predictions on test
+val$lm_pred <- predict(lm7,newdata = val,type="response")
+val$tot_pred = val$log_pred*(exp(val$lm_pred)-1)
+RMSE_val <- sqrt(sum((val$tot_pred-val$targdol)^2)/(51114))
+
+sprintf("RMSE on total validation data = %f",RMSE_val)
+
+#Binned Accuracy of Linear Model
+val$group <- cut(val$targdol, 20)
+accuracy <- aggregate(val[, c("targdol","lm_pred")], list(val$group), sum)
+
+#Plotting accuracy of linear model
+d <- melt(accuracy, id.vars="Group.1")
+p <- ggplot(d, aes(Group.1,value, col=variable)) +
+  geom_point() +
+  stat_smooth() 
+print(p + ggtitle("Linear Model Accuracy - Test"))
+
+#Binned Accuracy of Logistic Model
+val$group1 <- cut(val$log_pred, 20)
+accuracy1 <- aggregate(val[, c("responder","log_pred")], list(val$group1), sum)
+
+#Plotting accuracy of logistic model
+d <- melt(accuracy1, id.vars="Group.1")
+p <- ggplot(d, aes(Group.1,value, col=variable)) +
+  geom_point() +
+  stat_smooth() 
+print(p + ggtitle("Logistic Model Accuracy - Test"))
+
+#Binned Accuracy of Total Prediction
+val$group2 <- cut(val$targdol, 20)
+accuracy2 <- aggregate(val[, c("targdol","tot_pred")], list(val$group2), sum)
+
+#Plotting accuracy of linear model
+d <- melt(accuracy2, id.vars="Group.1")
+p <- ggplot(d, aes(Group.1,value, col=variable)) +
+  geom_point() +
+  stat_smooth() 
+print(p + ggtitle("Combined Accuracy - Test"))
+```
+
+
+### Top 1000 customers
+Assessing accuracy of prediction on top 1000 customers
+```{r}
+#Selecting top 1000 buyers from validation data
+top1000_val <- head(arrange(val,desc(targdol)), n = 1000)
+actual_total <- sum(top1000_val$targdol)
+pred_total <- sum(top1000_val$tot_pred)
+sprintf("Percent capture = %f %%",(pred_total/actual_total)*100)
+```
+
+
+
